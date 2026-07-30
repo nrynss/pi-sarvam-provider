@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `repository`, `homepage`, and `bugs` metadata now that the GitHub repository exists,
   so the npm page links back to the source.
 - Corrected the release-link account in this file (`rocknarayan` → `nrynss`); the earlier
-  links pointed at a GitHub user that does not own this repository.
+  links pointed at a GitHub user that does not own this repository. The 0.1.0 and 0.1.1 link
+  definitions were dropped rather than repointed: this repository's history begins at 0.1.2,
+  so there are no tags for them to resolve to.
 - Replaced the stale "Before you publish" section of the README with a Development section,
   including the local-testing conflict caveat (an installed copy and a locally loaded copy
   register the same tool names, and pi rejects the duplicate).
@@ -108,5 +110,3 @@ provider; other providers are untouched.
   help smaller Sarvam models land edits reliably.
 
 [0.1.2]: https://github.com/nrynss/pi-sarvam-provider/releases/tag/v0.1.2
-[0.1.1]: https://github.com/nrynss/pi-sarvam-provider/releases/tag/v0.1.1
-[0.1.0]: https://github.com/nrynss/pi-sarvam-provider/releases/tag/v0.1.0
