@@ -1,0 +1,15 @@
+# pnpm 11 reads settings from here rather than a "pnpm" field in package.json.
+#
+# Both are transitive, dev-only dependencies of @earendil-works/pi-coding-agent, and
+# neither install script is needed to typecheck this package (@google/genai's preinstall
+# is a declared no-op; protobufjs's postinstall only regenerates bundled artifacts).
+# Answering the prompt here lets `pnpm install` exit 0 — while it is unanswered, pnpm's
+# dep-status check fails and blocks `pnpm run typecheck`.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-agent-core@0.83.0'
+  - '@earendil-works/pi-ai@0.83.0'
+  - '@earendil-works/pi-coding-agent@0.83.0'
+  - '@earendil-works/pi-tui@0.83.0'

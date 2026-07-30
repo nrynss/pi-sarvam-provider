@@ -1,0 +1,61 @@
+{
+  "name": "pi-sarvam-provider",
+  "version": "0.1.2",
+  "description": "Pi coding-agent extension that registers Sarvam AI as a model provider and adds the compatibility shims its OpenAI-compatible endpoint needs (role/content fixes, tool-argument remapping, 403 retry, and a 256KB request-size guard).",
+  "author": "rocknarayan <rocknarayan@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nrynss/pi-sarvam-provider.git"
+  },
+  "homepage": "https://github.com/nrynss/pi-sarvam-provider#readme",
+  "bugs": {
+    "url": "https://github.com/nrynss/pi-sarvam-provider/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "sarvam",
+    "provider",
+    "llm",
+    "openai-compatible",
+    "ai"
+  ],
+  "files": [
+    "src/**/*.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.3"
+  }
+}
