@@ -48,8 +48,33 @@ All behaviour is scoped to the `sarvam` provider; other providers are unaffected
 
 ## Install
 
-Add the package to the `packages` array in your pi `settings.json`
-(`~/.pi/agent/settings.json`):
+```sh
+pi install npm:pi-sarvam-provider
+```
+
+Then set your key and select a model:
+
+```sh
+export SARVAM_API_KEY="sk-..."        # PowerShell: $env:SARVAM_API_KEY = "sk-..."
+pi
+# /model -> pick a sarvam-* model
+```
+
+Add the `export` line to your shell config (`~/.zshrc`, `~/.bashrc`) to keep the key across
+sessions.
+
+Other useful commands:
+
+```sh
+pi list                              # show installed packages
+pi install npm:pi-sarvam-provider@0.1.2   # pin a version
+pi update npm:pi-sarvam-provider     # update to the latest release
+pi remove npm:pi-sarvam-provider     # uninstall
+pi install -l npm:pi-sarvam-provider # install into this project only (.pi/npm/)
+```
+
+Alternatively, list the package in the `packages` array of your pi `settings.json`
+(`~/.pi/agent/settings.json`) and pi will install it on next start:
 
 ```jsonc
 {
@@ -59,27 +84,8 @@ Add the package to the `packages` array in your pi `settings.json`
 }
 ```
 
-pi installs and loads it automatically on next start. Then set your key and select a model:
-
-```sh
-export SARVAM_API_KEY="sk-..."        # PowerShell: $env:SARVAM_API_KEY = "sk-..."
-pi
-# /model -> pick a sarvam-* model
-```
-
 > If you previously had a local `sarvam.ts` in `~/.pi/agent/extensions/`, delete it after
 > installing this package to avoid registering the provider twice.
-
-### Local development / testing before publishing
-
-```sh
-npm install
-npm run typecheck
-npm pack                 # produces pi-sarvam-provider-0.1.0.tgz
-```
-
-Point pi at the local checkout via a `file:` package entry, or install the packed tarball,
-to test before publishing.
 
 ## Configuration
 

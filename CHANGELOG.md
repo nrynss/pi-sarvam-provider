@@ -5,7 +5,7 @@ All notable changes to `pi-sarvam-provider` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.2] - 2026-07-30
+## [0.1.2] - 2026-08-01
 
 ### Changed
 
@@ -20,7 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so there are no tags for them to resolve to.
 - Replaced the stale "Before you publish" section of the README with a Development section,
   including the local-testing conflict caveat (an installed copy and a locally loaded copy
-  register the same tool names, and pi rejects the duplicate).
+  register the same tool names, and pi rejects the duplicate). A leftover copy of the old
+  section survived under Install, still referencing `npm pack` and a `0.1.0` tarball; it is
+  now removed.
+- **Rewrote the README Install section around `pi install npm:pi-sarvam-provider`.** The
+  section previously only documented hand-editing the `packages` array in
+  `~/.pi/agent/settings.json`, which is now shown as the alternative. Added the related
+  package commands (`pi list`, `pi update`, `pi remove`, version pinning, `-l` for
+  project-local installs) and a note on persisting `SARVAM_API_KEY` in a shell config.
 
 ## [0.1.1] - 2026-07-30
 
