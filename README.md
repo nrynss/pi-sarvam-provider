@@ -67,7 +67,7 @@ Other useful commands:
 
 ```sh
 pi list                              # show installed packages
-pi install npm:pi-sarvam-provider@0.1.2   # pin a version
+pi install npm:pi-sarvam-provider@0.1.3   # pin a version
 pi update npm:pi-sarvam-provider     # update to the latest release
 pi remove npm:pi-sarvam-provider     # uninstall
 pi install -l npm:pi-sarvam-provider # install into this project only (.pi/npm/)
@@ -123,35 +123,58 @@ Note that an installed copy of this package registers the same `read`/`write`/`e
 names as a local one, and pi rejects the duplicate rather than choosing between them. Remove
 the installed copy (`pi remove npm:pi-sarvam-provider`) before testing locally.
 
-## API Reference
+## Internals
 
-### Core Functions
+The package exports one default function — pi's extension entry point. Everything below
+lives inside it; nothing else is importable.
 
-- `activate(pi: ExtensionAPI)` - Main entry point that registers the Sarvam provider and applies all compatibility shims
-- `streamWithRetry(model, context, options)` - Wraps the Sarvam provider stream with transient error retry logic
-- `remapPath(args)` - Fixes Windows path format by removing spurious leading separators
+### Request paths
 
-### Configuration Options
+pi issues provider requests on two paths, and the shims have to cover both:
 
-| Environment Variable | Type | Default | Description |
-|---------------------|------|---------|-------------|
-| `SARVAM_API_KEY` | string | - | Required: Your Sarvam API key |
-| `SARVAM_DEBUG` | boolean | false | Enable debug logging with `[Sarvam Provider]` prefix and detailed metrics summary on process exit |
-| `SARVAM_PROVIDER_RETRIES` | number | 2 | Number of provider-level retries (hardcoded delays: 1s/3s/8s) |
+- **Normal turns** — pi supplies an `onPayload` callback, which is what fires the
+  `before_provider_request` extension hook.
+- **Compaction and branch summarization** — these build their own request options and
+  supply no callback, so no hook fires.
 
-### Tool Compatibility
+Payload normalisation (`developer` → `system`, array content → string, the 256 KB size
+guard) is therefore attached as an `onPayload` on the options the provider wrapper passes
+down — every Sarvam request funnels through that wrapper — rather than relying on the hook
+alone. Before this, compaction reached Sarvam with array content and was rejected with
+`body.messages.1.user.content : Input should be a valid string`.
 
-The extension provides compatibility shims for the following tools:
+### Retry layers
 
-- **read** - Automatically fixes Windows paths and converts array content to strings
-- **write** - Automatically fixes Windows paths and converts array content to strings  
-- **edit** - Remaps Claude-style arguments (`file_path`, `old_string`/`new_string`) to pi's schema (`path`, `edits[{oldText,newText}]`)
+Two independent layers covering different failures:
 
-### Error Handling
+| Layer | Handles | Timing |
+| ----- | ------- | ------ |
+| pi-ai `retryProviderRequest` | 408, 409, 429, 5xx | `Retry-After` when sent, else exponential backoff with jitter, capped by `retry.provider.maxRetryDelayMs` (60 s) |
+| This extension's stream wrapper | Transient `403` gateway blips | Fixed ladder: 1 s / 3 s / 8 s |
 
-- **Transient 403 errors** - Automatically retried with exponential backoff (1s/3s/8s)
-- **Request size limits** - Automatically trims old message content to stay under 256KB
-- **Developer role** - Automatically converted to system role for compatibility
+pi ships `retry.provider.maxRetries: 0`, which leaves the first layer inert, so the
+extension requests retries for Sarvam traffic (`SARVAM_PROVIDER_RETRIES`) to get
+`Retry-After` honoured. pi-ai does not retry `403`, so the second layer keeps that job. A
+`403` that looks like a bad key rather than a blip is not retried at all.
+
+### Tool argument shims
+
+`read`, `write`, and `edit` are re-registered from pi's own factories with an added
+`prepareArguments` step — the only hook that runs *before* schema validation:
+
+- all three: `file_path` → `path`, plus Windows drive-prefix repair (`/E:/work` → `E:\work`)
+- `edit` also maps `old_string`/`new_string` → `oldText`/`newText`, then delegates to pi's
+  own edit-argument recovery
+
+Array content → string is a message-payload transformation, not a tool one.
+
+### Model discovery cache
+
+Discovery runs once per process, so the cache is on disk
+(`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`, mode 600, 5 minute TTL): it saves the
+`/v1/models` round-trip on the *next* launch. Entries are invalidated by base URL, a hash
+of the API key, and TTL — the key itself is never written. Any cache I/O failure falls back
+to fetching.
 
 ## License
 
