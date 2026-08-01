@@ -113,11 +113,63 @@ const modelMetrics: ModelDiscoveryMetrics = {
   errors: 0
 };
 
-// Optional debug logging for model discovery
+// General provider monitoring metrics
+interface ProviderMetrics {
+  totalRequests: number;
+  totalDuration: number;
+  avgDuration: number;
+  retryAttempts: number;
+  streamErrors: number;
+  toolCalls: number;
+  contentTransformations: number;
+  sizeGuardTriggers: number;
+  toolCallTypes: Record<string, number>;
+}
+
+const providerMetrics: ProviderMetrics = {
+  totalRequests: 0,
+  totalDuration: 0,
+  avgDuration: 0,
+  retryAttempts: 0,
+  streamErrors: 0,
+  toolCalls: 0,
+  contentTransformations: 0,
+  sizeGuardTriggers: 0,
+  toolCallTypes: {} as Record<string, number>
+};
+
+// Optional debug logging
 const debugLog = (message: string) => {
   if (process.env.SARVAM_DEBUG === "true") {
-    console.log(`[Sarvam Model Discovery] ${message}`);
+    console.log(`[Sarvam Provider] ${message}`);
   }
+};
+
+// Debug metrics summary
+const debugMetrics = () => {
+  if (process.env.SARVAM_DEBUG !== "true") return;
+
+  const totalTime = providerMetrics.totalDuration;
+  const toolCallBreakdown = Object.entries(providerMetrics.toolCallTypes)
+    .map(([type, count]) => `${type}: ${count}`)
+    .join(", ");
+
+  console.log(`
+=== Sarvam Provider Metrics ===
+Total Requests: ${providerMetrics.totalRequests}
+Total Duration: ${totalTime}ms
+Avg Duration: ${totalTime > 0 ? (totalTime / providerMetrics.totalRequests).toFixed(2) : 0}ms
+Retry Attempts: ${providerMetrics.retryAttempts}
+Stream Errors: ${providerMetrics.streamErrors}
+Tool Calls: ${providerMetrics.toolCalls} (${toolCallBreakdown})
+Content Transformations: ${providerMetrics.contentTransformations}
+Size Guard Triggers: ${providerMetrics.sizeGuardTriggers}
+Cache Hits: ${modelMetrics.cacheHits}
+Cache Misses: ${modelMetrics.cacheMisses}
+API Calls: ${modelMetrics.apiCalls}
+Errors: ${modelMetrics.errors}
+==================================
+`);
 };
 
 // Export metrics for monitoring (if needed)
@@ -125,12 +177,26 @@ const getModelDiscoveryMetrics = (): ModelDiscoveryMetrics => ({
   ...modelMetrics
 });
 
-// Clear metrics (useful for testing)
-const clearModelMetrics = (): void => {
+// Export general provider metrics
+const getProviderMetrics = (): ProviderMetrics => ({
+  ...providerMetrics
+});
+
+// Clear all metrics (useful for testing)
+const clearAllMetrics = (): void => {
   modelMetrics.cacheHits = 0;
   modelMetrics.cacheMisses = 0;
   modelMetrics.apiCalls = 0;
   modelMetrics.errors = 0;
+
+  providerMetrics.totalRequests = 0;
+  providerMetrics.totalDuration = 0;
+  providerMetrics.avgDuration = 0;
+  providerMetrics.retryAttempts = 0;
+  providerMetrics.streamErrors = 0;
+  providerMetrics.toolCalls = 0;
+  providerMetrics.contentTransformations = 0;
+  providerMetrics.sizeGuardTriggers = 0;
 };
 
 export default async function (pi: ExtensionAPI) {
@@ -179,6 +245,11 @@ export default async function (pi: ExtensionAPI) {
   readDef.prepareArguments = (args: unknown) => {
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
+
+    // Track read tool calls
+    providerMetrics.toolCalls++;
+    providerMetrics.toolCallTypes.read = (providerMetrics.toolCallTypes.read || 0) + 1;
+
     return a as never;
   };
   pi.registerTool(readDef);
@@ -187,6 +258,11 @@ export default async function (pi: ExtensionAPI) {
   writeDef.prepareArguments = (args: unknown) => {
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
+
+    // Track write tool calls
+    providerMetrics.toolCalls++;
+    providerMetrics.toolCallTypes.write = (providerMetrics.toolCallTypes.write || 0) + 1;
+
     return a as never;
   };
   pi.registerTool(writeDef);
@@ -207,6 +283,11 @@ export default async function (pi: ExtensionAPI) {
       delete a.new_string;
     }
     delete a.replace_all;
+
+    // Track edit tool calls
+    providerMetrics.toolCalls++;
+    providerMetrics.toolCallTypes.edit = (providerMetrics.toolCallTypes.edit || 0) + 1;
+
     return (piEditPrepare ? piEditPrepare(a) : a) as never;
   };
   pi.registerTool(editDef);
@@ -272,13 +353,28 @@ export default async function (pi: ExtensionAPI) {
   });
 
   const streamWithRetry = (model: any, context: any, options: any): any => {
+    const startTime = Date.now();
     const out = createAssistantMessageEventStream();
 
     void (async () => {
       for (let attempt = 0; ; attempt++) {
-        if (options?.signal?.aborted) { (out as any).push(errorEvent(model, "Request was aborted")); return; }
+        const attemptStart = Date.now();
+
+        if (options?.signal?.aborted) {
+          const duration = Date.now() - startTime;
+          providerMetrics.totalRequests++;
+          providerMetrics.totalDuration += duration;
+          providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;
+
+          debugLog(`Request aborted after ${duration}ms (attempt ${attempt + 1})`);
+          (out as any).push(errorEvent(model, "Request was aborted"));
+          return;
+        }
+
         let pushedAny = false;
         let retrying = false;
+        let errorCount = 0;
+
         try {
           const src = baseStreamSimple!(model, context, options);
           for await (const ev of src as AsyncIterable<any>) {
@@ -287,22 +383,55 @@ export default async function (pi: ExtensionAPI) {
               !options?.signal?.aborted && shouldRetry(String(ev?.error?.errorMessage ?? ""))
             ) {
               retrying = true;
+              errorCount++;
               break;
             }
             pushedAny = true;
             (out as any).push(ev);
-            if (ev?.type === "done" || ev?.type === "error") return; // stream complete
+            if (ev?.type === "done" || ev?.type === "error") {
+              const duration = Date.now() - startTime;
+              providerMetrics.totalRequests++;
+              providerMetrics.totalDuration += duration;
+              providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;
+
+              debugLog(`Stream completed in ${duration}ms (attempt ${attempt + 1}, ${errorCount} errors)`);
+              return; // stream complete
+            }
           }
-          if (retrying) { await sleep(RETRY_DELAYS_MS[attempt]!, options?.signal); continue; }
+          if (retrying) {
+            const delay = RETRY_DELAYS_MS[attempt];
+            providerMetrics.retryAttempts++;
+            debugLog(`Retrying in ${delay}ms (attempt ${attempt + 1}, ${errorCount} errors)`);
+            await sleep(delay, options?.signal);
+            continue;
+          }
           // Source ended without a terminal event: close defensively.
+          const duration = Date.now() - startTime;
+          providerMetrics.totalRequests++;
+          providerMetrics.totalDuration += duration;
+          providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;
+
+          debugLog(`Stream ended without final event after ${duration}ms`);
           (out as any).push(errorEvent(model, "Stream ended without a final event."));
           return;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          const duration = Date.now() - startTime;
+          errorCount++;
+
           if (!pushedAny && attempt < RETRY_DELAYS_MS.length && !options?.signal?.aborted && shouldRetry(msg)) {
+            providerMetrics.retryAttempts++;
+            debugLog(`Retrying after error: ${msg} (attempt ${attempt + 1}, ${errorCount} total errors)`);
             await sleep(RETRY_DELAYS_MS[attempt]!, options?.signal);
             continue;
           }
+
+          providerMetrics.streamErrors++;
+          providerMetrics.totalRequests++;
+          providerMetrics.totalDuration += duration;
+          providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;
+
+          debugLog(`Stream error after ${duration}ms: ${msg} (attempt ${attempt + 1}, ${errorCount} total errors)`);
           (out as any).push(errorEvent(model, msg));
           return;
         }
@@ -467,21 +596,27 @@ export default async function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (event, ctx) => {
     if (ctx.model?.provider !== "sarvam") return;
 
+    const startTime = Date.now();
     const payload = event.payload as Record<string, unknown>;
     if (!Array.isArray(payload?.messages)) return;
 
     const messages: Array<Record<string, unknown>> = (payload.messages as Array<Record<string, unknown>>).map(msg => {
       const role = msg.role === "developer" ? "system" : msg.role;
       if (!Array.isArray(msg.content)) return { ...msg, role };
+
       const text = (msg.content as Array<{ type?: string; text?: string }>)
         .filter(p => p.type === "text" || typeof p.text === "string")
         .map(p => p.text ?? "")
         .join("");
+
+      providerMetrics.contentTransformations++;
       return { ...msg, role, content: text };
     });
 
     let result: Record<string, unknown> = { ...payload, messages };
     if (bodySize(result) > MAX_BODY) {
+      providerMetrics.sizeGuardTriggers++;
+
       // Keep leading system message(s) intact.
       let sysCount = 0;
       while (sysCount < messages.length && messages[sysCount].role === "system") sysCount++;
@@ -580,5 +715,9 @@ export default async function (pi: ExtensionAPI) {
 
     return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
   });
+
+  // Log metrics summary when provider is initialized
+  debugLog("Provider initialized successfully");
+  debugMetrics();
 
 }
