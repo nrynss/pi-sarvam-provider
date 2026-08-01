@@ -30,7 +30,7 @@ The extension is well-engineered with robust error handling, request size manage
 
 ### Medium Priority (Following Sprint)
 
-#### 3. Model Discovery Caching
+#### 3. Model Discovery Caching ✅ COMPLETED
 - **Goal**: Reduce API calls and handle rate limiting during model discovery
 - **Implementation**:
   - Implement in-memory caching for model list
@@ -38,8 +38,14 @@ The extension is well-engineered with robust error handling, request size manage
   - Handle rate limiting gracefully
 - **Files to modify**: `src/index.ts`
 - **Benefits**: Reduced latency and API usage
+- **Status**: ✅ Completed — cache is on **disk** (`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`,
+  5 min TTL), not in memory. Discovery runs once per process during activate, so an
+  in-memory cache can never serve a hit; only a disk cache saves the `/v1/models`
+  round-trip, and it does so on the next pi launch. Invalidated by base URL, a hash of
+  the API key, and TTL. The rate-limiting sub-item was dropped: one request per process
+  start needs no throttle.
 
-#### 4. Monitoring & Metrics
+#### 4. Monitoring & Metrics ✅ COMPLETED
 - **Goal**: Add request/response timing and failure tracking
 - **Implementation**:
   - Add timing metrics for requests
@@ -47,6 +53,10 @@ The extension is well-engineered with robust error handling, request size manage
   - Optional debug logging mode
 - **Files to modify**: `src/index.ts`
 - **Benefits**: Better observability and performance insights
+- **Status**: ✅ Completed — `ProviderMetrics` covers timing, retries, stream errors, tool
+  calls, content transformations and size-guard triggers. The summary prints on **process
+  exit** under `SARVAM_DEBUG=true`; printing it at the end of activate (as first written)
+  only ever showed zeros.
 
 ### Low Priority (Future)
 
@@ -128,6 +138,14 @@ The extension is well-engineered with robust error handling, request size manage
 - Code review for all changes
 - Documentation review before releases
 - User feedback incorporation
+
+## Progress Summary
+- ✅ **Item 3**: Model Discovery Caching - COMPLETED
+- ✅ **Item 4**: Monitoring & Metrics - COMPLETED
+- ⏳ **Item 5**: Testing Infrastructure - Pending
+- ⏳ **Item 6**: Documentation Enhancements - Pending
+- ⏳ **Item 7**: Type Safety Improvements - Pending
+- ⏳ **Item 8**: Extensibility Framework - Pending
 
 ---
 *This plan should be reviewed and adjusted based on implementation progress and user feedback.*

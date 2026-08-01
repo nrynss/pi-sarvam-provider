@@ -32,6 +32,10 @@ import {
   registerBuiltInApiProviders,
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai/compat";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 interface ModelResponse {
   data: Array<{
@@ -41,62 +45,64 @@ interface ModelResponse {
   }>;
 }
 
-// Model discovery cache with TTL and rate limiting
+// Model discovery cache.
+//
+// Discovery runs exactly once per process, during activate — so an in-memory cache
+// can never serve a hit (the process always starts cold, misses, writes, and exits
+// without reading again). The only way this saves anything is on disk, where it
+// skips the /v1/models round-trip on the *next* pi launch.
+//
+// Keyed by base URL plus a hash of the API key, so rotating the key invalidates the
+// cache rather than serving models the new key may not have access to. The key
+// itself is never written to disk.
 interface ModelCacheEntry {
+  baseUrl: string;
+  keyHash: string;
   models: ModelResponse;
   timestamp: number;
   ttl: number;
 }
 
-class ModelCache {
-  private cache: Map<string, ModelCacheEntry> = new Map();
-  private rateLimitDelay: number = 0;
+const CACHE_DIR = join(
+  process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+  "pi-sarvam-provider"
+);
+const CACHE_FILE = join(CACHE_DIR, "models.json");
+const DEFAULT_TTL = 300000; // 5 minutes
 
-  constructor(private defaultTTL: number = 300000) {} // 5 minutes default TTL
+const keyHashOf = (apiKey: string) =>
+  createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
 
-  async getCachedModels(apiKey: string, baseUrl: string): Promise<ModelResponse | null> {
-    const cacheKey = `${baseUrl}:${apiKey}`;
-    const entry = this.cache.get(cacheKey);
-
-    if (entry && Date.now() - entry.timestamp < entry.ttl) {
-      return entry.models;
-    }
-
-    // Apply rate limiting if we recently made a request
-    if (this.rateLimitDelay > 0) {
-      await this.sleep(this.rateLimitDelay);
-      this.rateLimitDelay = 0;
-    }
-
+// Every failure path here is non-fatal: a missing, corrupt, stale, or unreadable
+// cache just means we fetch fresh. Model discovery must never break on cache I/O.
+const readCachedModels = (apiKey: string, baseUrl: string): ModelResponse | null => {
+  try {
+    const entry = JSON.parse(readFileSync(CACHE_FILE, "utf8")) as ModelCacheEntry;
+    if (entry.baseUrl !== baseUrl) return null;
+    if (entry.keyHash !== keyHashOf(apiKey)) return null;
+    if (Date.now() - entry.timestamp >= entry.ttl) return null;
+    if (!Array.isArray(entry.models?.data)) return null;
+    return entry.models;
+  } catch {
     return null;
   }
+};
 
-  setCachedModels(apiKey: string, baseUrl: string, models: ModelResponse, ttl?: number): void {
-    const cacheKey = `${baseUrl}:${apiKey}`;
-    const cacheTTL = ttl || this.defaultTTL;
-
-    // Implement rate limiting for next request
-    // Sarvam's API typically allows ~60 requests per minute
-    this.rateLimitDelay = Math.max(1000, 60000 / 60 - 100); // ~1000ms between requests
-
-    this.cache.set(cacheKey, {
+const writeCachedModels = (apiKey: string, baseUrl: string, models: ModelResponse): void => {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const entry: ModelCacheEntry = {
+      baseUrl,
+      keyHash: keyHashOf(apiKey),
       models,
       timestamp: Date.now(),
-      ttl: cacheTTL
-    });
+      ttl: DEFAULT_TTL,
+    };
+    writeFileSync(CACHE_FILE, JSON.stringify(entry), { mode: 0o600 });
+  } catch (err) {
+    debugLog(`Could not write model cache: ${err instanceof Error ? err.message : String(err)}`);
   }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  clear(): void {
-    this.cache.clear();
-    this.rateLimitDelay = 0;
-  }
-}
-
-const modelCache = new ModelCache();
+};
 
 // Model discovery monitoring
 interface ModelDiscoveryMetrics {
@@ -145,9 +151,12 @@ const debugLog = (message: string) => {
   }
 };
 
-// Debug metrics summary
+// Debug metrics summary. Registered on process exit rather than called during
+// activate — at activate time every counter is still zero, so the summary only
+// carries information once the session has actually run.
 const debugMetrics = () => {
   if (process.env.SARVAM_DEBUG !== "true") return;
+  if (providerMetrics.totalRequests === 0 && modelMetrics.apiCalls === 0) return;
 
   const totalTime = providerMetrics.totalDuration;
   const toolCallBreakdown = Object.entries(providerMetrics.toolCallTypes)
@@ -170,33 +179,6 @@ API Calls: ${modelMetrics.apiCalls}
 Errors: ${modelMetrics.errors}
 ==================================
 `);
-};
-
-// Export metrics for monitoring (if needed)
-const getModelDiscoveryMetrics = (): ModelDiscoveryMetrics => ({
-  ...modelMetrics
-});
-
-// Export general provider metrics
-const getProviderMetrics = (): ProviderMetrics => ({
-  ...providerMetrics
-});
-
-// Clear all metrics (useful for testing)
-const clearAllMetrics = (): void => {
-  modelMetrics.cacheHits = 0;
-  modelMetrics.cacheMisses = 0;
-  modelMetrics.apiCalls = 0;
-  modelMetrics.errors = 0;
-
-  providerMetrics.totalRequests = 0;
-  providerMetrics.totalDuration = 0;
-  providerMetrics.avgDuration = 0;
-  providerMetrics.retryAttempts = 0;
-  providerMetrics.streamErrors = 0;
-  providerMetrics.toolCalls = 0;
-  providerMetrics.contentTransformations = 0;
-  providerMetrics.sizeGuardTriggers = 0;
 };
 
 export default async function (pi: ExtensionAPI) {
@@ -352,6 +334,30 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
+  // pi supplies an `onPayload` callback — the thing that fires
+  // `before_provider_request` — only on the normal turn path. Compaction and branch
+  // summarization build their own request options (`createSummarizationOptions` in
+  // pi's compaction.ts returns just `{maxTokens, signal, apiKey, headers, env}`), so
+  // no hook fires, the payload reaches Sarvam with array-shaped content, and the
+  // request dies with `body.messages.1.user.content : Input should be a valid
+  // string` — index 1 being the summarization prompt. That failure surfaces as
+  // "Auto-compaction failed" and, once the context is full, every turn then fails.
+  //
+  // Every sarvam request funnels through this wrapper, so attaching the normalizer
+  // to the options we pass down covers both paths with one code path. Any callback
+  // pi did supply still runs first, so the hook keeps its rewrite rights.
+  const withPayloadNormalizer = (options: any) => {
+    const prior = options?.onPayload;
+    return {
+      ...options,
+      onPayload: async (payload: unknown, model: unknown) => {
+        const rewritten = prior ? await prior(payload, model) : undefined;
+        const current = (rewritten ?? payload) as Record<string, unknown>;
+        return normalizeSarvamPayload(current) ?? current;
+      },
+    };
+  };
+
   const streamWithRetry = (model: any, context: any, options: any): any => {
     const startTime = Date.now();
     const out = createAssistantMessageEventStream();
@@ -376,7 +382,7 @@ export default async function (pi: ExtensionAPI) {
         let errorCount = 0;
 
         try {
-          const src = baseStreamSimple!(model, context, options);
+          const src = baseStreamSimple!(model, context, withPayloadNormalizer(options));
           for await (const ev of src as AsyncIterable<any>) {
             if (
               ev?.type === "error" && !pushedAny && attempt < RETRY_DELAYS_MS.length &&
@@ -450,14 +456,14 @@ export default async function (pi: ExtensionAPI) {
   const BASE_URL = "https://api.sarvam.ai/v1";
 
   // Try to get cached models first
-  let models: ModelResponse | null = await modelCache.getCachedModels(apiKey, BASE_URL);
+  let models: ModelResponse | null = readCachedModels(apiKey, BASE_URL);
 
   if (models) {
     modelMetrics.cacheHits++;
-    debugLog(`Cache hit for models (took ${Date.now()})`);
+    debugLog(`Model cache hit (${models.data.length} models, skipping /v1/models)`);
   } else {
     modelMetrics.cacheMisses++;
-    debugLog(`Cache miss, fetching models from API`);
+    debugLog(`Model cache miss, fetching models from API`);
   }
 
   if (!models) {
@@ -486,8 +492,8 @@ export default async function (pi: ExtensionAPI) {
       modelMetrics.apiCalls++;
       debugLog(`Successfully fetched ${models.data.length} models from API`);
 
-      // Cache the successful response
-      modelCache.setCachedModels(apiKey, BASE_URL, models, 300000); // 5 minute TTL
+      // Cache the successful response for the next pi launch
+      writeCachedModels(apiKey, BASE_URL, models);
 
     } catch (err) {
       modelMetrics.errors++;
@@ -593,11 +599,12 @@ export default async function (pi: ExtensionAPI) {
   const STUB = "[older output truncated to fit Sarvam's 256KB request limit]";
   const bodySize = (o: unknown) => Buffer.byteLength(JSON.stringify(o));
 
-  pi.on("before_provider_request", (event, ctx) => {
-    if (ctx.model?.provider !== "sarvam") return;
-
-    const startTime = Date.now();
-    const payload = event.payload as Record<string, unknown>;
+  // Applied from two places, because pi has two request paths (see the onPayload
+  // injection in streamWithRetry below): the `before_provider_request` hook covers
+  // normal turns, and an injected `options.onPayload` covers compaction/branch
+  // summarization, which never fires the hook. Idempotent — a second pass sees
+  // string content and returns it unchanged — so double application is harmless.
+  const normalizeSarvamPayload = (payload: Record<string, unknown>): Record<string, unknown> | undefined => {
     if (!Array.isArray(payload?.messages)) return;
 
     const messages: Array<Record<string, unknown>> = (payload.messages as Array<Record<string, unknown>>).map(msg => {
@@ -691,6 +698,11 @@ export default async function (pi: ExtensionAPI) {
     }
 
     return result;
+  };
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (ctx.model?.provider !== "sarvam") return;
+    return normalizeSarvamPayload(event.payload as Record<string, unknown>);
   });
 
   // ---------------------------------------------------------------------------
@@ -716,8 +728,7 @@ export default async function (pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
   });
 
-  // Log metrics summary when provider is initialized
   debugLog("Provider initialized successfully");
-  debugMetrics();
+  process.on("exit", debugMetrics);
 
 }

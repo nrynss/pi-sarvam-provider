@@ -5,6 +5,45 @@ All notable changes to `pi-sarvam-provider` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-08-01
+
+### Fixed
+
+- **Auto-compaction no longer fails against Sarvam.** pi supplies the `onPayload` callback
+  that fires `before_provider_request` only on the normal turn path; compaction and branch
+  summarization build their own request options (`createSummarizationOptions` returns just
+  `{maxTokens, signal, apiKey, headers, env}`), so no hook fired and the summarization
+  request reached Sarvam with pi-native array content. Sarvam rejected it with
+  `body.messages.1.user.content : Input should be a valid string` — index 1 being the
+  summarization prompt — surfacing as `Auto-compaction failed`. Because compaction is what
+  frees up context, this was terminal: once the window filled, every subsequent turn failed.
+  The payload normalization is now also attached as an `onPayload` on the options passed
+  down inside the provider's stream wrapper, which every Sarvam request funnels through, so
+  both paths are covered. Any callback pi does supply still runs first, and the transform is
+  idempotent, so double application is a no-op.
+
+### Changed
+
+- **Model discovery cache moved from memory to disk**
+  (`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`, mode 600, 5 minute TTL). Discovery runs
+  once per process during activate, so the previous in-memory cache could never serve a hit —
+  each run missed, wrote, and exited without reading. The disk cache skips the `/v1/models`
+  round-trip on the next pi launch. Entries are invalidated by base URL, a 12-char hash of
+  the API key (so rotating the key invalidates rather than serving models it cannot access),
+  and TTL. The API key itself is never written to disk. Cache I/O failures are non-fatal:
+  a missing, corrupt, stale, or unreadable cache just fetches fresh.
+- **The `SARVAM_DEBUG` metrics summary now prints on process exit** instead of at the end of
+  activate, where every counter was still zero. It is suppressed entirely when no requests
+  were made.
+
+### Removed
+
+- The rate-limiting logic in the model cache. It could never fire — the delay was only ever
+  set by a cache write, which happened after the sole cache read — and one request per
+  process start needs no throttle.
+- `getModelDiscoveryMetrics`, `getProviderMetrics`, and `clearAllMetrics`, which were defined
+  but never called.
+
 ## [0.1.2] - 2026-08-01
 
 ### Changed
@@ -116,4 +155,5 @@ provider; other providers are untouched.
 - **Editing guidance** — appends concrete exact-match editing rules to the system prompt to
   help smaller Sarvam models land edits reliably.
 
+[0.1.3]: https://github.com/nrynss/pi-sarvam-provider/releases/tag/v0.1.3
 [0.1.2]: https://github.com/nrynss/pi-sarvam-provider/releases/tag/v0.1.2
