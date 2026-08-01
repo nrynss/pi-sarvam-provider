@@ -41,6 +41,98 @@ interface ModelResponse {
   }>;
 }
 
+// Model discovery cache with TTL and rate limiting
+interface ModelCacheEntry {
+  models: ModelResponse;
+  timestamp: number;
+  ttl: number;
+}
+
+class ModelCache {
+  private cache: Map<string, ModelCacheEntry> = new Map();
+  private rateLimitDelay: number = 0;
+
+  constructor(private defaultTTL: number = 300000) {} // 5 minutes default TTL
+
+  async getCachedModels(apiKey: string, baseUrl: string): Promise<ModelResponse | null> {
+    const cacheKey = `${baseUrl}:${apiKey}`;
+    const entry = this.cache.get(cacheKey);
+
+    if (entry && Date.now() - entry.timestamp < entry.ttl) {
+      return entry.models;
+    }
+
+    // Apply rate limiting if we recently made a request
+    if (this.rateLimitDelay > 0) {
+      await this.sleep(this.rateLimitDelay);
+      this.rateLimitDelay = 0;
+    }
+
+    return null;
+  }
+
+  setCachedModels(apiKey: string, baseUrl: string, models: ModelResponse, ttl?: number): void {
+    const cacheKey = `${baseUrl}:${apiKey}`;
+    const cacheTTL = ttl || this.defaultTTL;
+
+    // Implement rate limiting for next request
+    // Sarvam's API typically allows ~60 requests per minute
+    this.rateLimitDelay = Math.max(1000, 60000 / 60 - 100); // ~1000ms between requests
+
+    this.cache.set(cacheKey, {
+      models,
+      timestamp: Date.now(),
+      ttl: cacheTTL
+    });
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.rateLimitDelay = 0;
+  }
+}
+
+const modelCache = new ModelCache();
+
+// Model discovery monitoring
+interface ModelDiscoveryMetrics {
+  cacheHits: number;
+  cacheMisses: number;
+  apiCalls: number;
+  errors: number;
+}
+
+const modelMetrics: ModelDiscoveryMetrics = {
+  cacheHits: 0,
+  cacheMisses: 0,
+  apiCalls: 0,
+  errors: 0
+};
+
+// Optional debug logging for model discovery
+const debugLog = (message: string) => {
+  if (process.env.SARVAM_DEBUG === "true") {
+    console.log(`[Sarvam Model Discovery] ${message}`);
+  }
+};
+
+// Export metrics for monitoring (if needed)
+const getModelDiscoveryMetrics = (): ModelDiscoveryMetrics => ({
+  ...modelMetrics
+});
+
+// Clear metrics (useful for testing)
+const clearModelMetrics = (): void => {
+  modelMetrics.cacheHits = 0;
+  modelMetrics.cacheMisses = 0;
+  modelMetrics.apiCalls = 0;
+  modelMetrics.errors = 0;
+};
+
 export default async function (pi: ExtensionAPI) {
 
   const apiKey = process.env.SARVAM_API_KEY;
@@ -228,34 +320,54 @@ export default async function (pi: ExtensionAPI) {
   // throw out of the extension entry point, which surfaces as an opaque stack trace.
   const BASE_URL = "https://api.sarvam.ai/v1";
 
-  let models: ModelResponse;
-  try {
-    const response = await fetch(
-      `${BASE_URL}/models`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        }
-      }
-    );
+  // Try to get cached models first
+  let models: ModelResponse | null = await modelCache.getCachedModels(apiKey, BASE_URL);
 
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => "")).slice(0, 300).trim();
+  if (models) {
+    modelMetrics.cacheHits++;
+    debugLog(`Cache hit for models (took ${Date.now()})`);
+  } else {
+    modelMetrics.cacheMisses++;
+    debugLog(`Cache miss, fetching models from API`);
+  }
+
+  if (!models) {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/models`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => "")).slice(0, 300).trim();
+        console.warn(
+          `Sarvam: could not list models — HTTP ${response.status} ${response.statusText}.` +
+          `${response.status === 401 || response.status === 403 ? " Check SARVAM_API_KEY." : ""}` +
+          `${detail ? ` ${detail}` : ""}`
+        );
+        return;
+      }
+
+      models = (await response.json()) as ModelResponse;
+
+      modelMetrics.apiCalls++;
+      debugLog(`Successfully fetched ${models.data.length} models from API`);
+
+      // Cache the successful response
+      modelCache.setCachedModels(apiKey, BASE_URL, models, 300000); // 5 minute TTL
+
+    } catch (err) {
+      modelMetrics.errors++;
       console.warn(
-        `Sarvam: could not list models — HTTP ${response.status} ${response.statusText}.` +
-        `${response.status === 401 || response.status === 403 ? " Check SARVAM_API_KEY." : ""}` +
-        `${detail ? ` ${detail}` : ""}`
+        `Sarvam: could not reach ${BASE_URL}/models — ` +
+        `${err instanceof Error ? err.message : String(err)}`
       );
       return;
     }
-
-    models = (await response.json()) as ModelResponse;
-  } catch (err) {
-    console.warn(
-      `Sarvam: could not reach ${BASE_URL}/models — ` +
-      `${err instanceof Error ? err.message : String(err)}`
-    );
-    return;
   }
 
   if (!Array.isArray(models?.data) || models.data.length === 0) {
