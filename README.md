@@ -137,7 +137,7 @@ the installed copy (`pi remove npm:pi-sarvam-provider`) before testing locally.
 |---------------------|------|---------|-------------|
 | `SARVAM_API_KEY` | string | - | Required: Your Sarvam API key |
 | `SARVAM_DEBUG` | boolean | false | Enable debug logging and metrics summary |
-| `SARVAM_PROVIDER_RETRIES` | number | 2 | Number of provider-level retries for 429 responses |
+| `SARVAM_PROVIDER_RETRIES` | number | 2 | Number of provider-level retries (hardcoded delays: 1s/3s/8s) |
 
 ### Tool Compatibility
 
