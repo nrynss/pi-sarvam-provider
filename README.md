@@ -123,6 +123,36 @@ Note that an installed copy of this package registers the same `read`/`write`/`e
 names as a local one, and pi rejects the duplicate rather than choosing between them. Remove
 the installed copy (`pi remove npm:pi-sarvam-provider`) before testing locally.
 
+## API Reference
+
+### Core Functions
+
+- `activate(pi: ExtensionAPI)` - Main entry point that registers the Sarvam provider and applies all compatibility shims
+- `streamWithRetry(model, context, options)` - Wraps the Sarvam provider stream with transient error retry logic
+- `remapPath(args)` - Fixes Windows path format by removing spurious leading separators
+
+### Configuration Options
+
+| Environment Variable | Type | Default | Description |
+|---------------------|------|---------|-------------|
+| `SARVAM_API_KEY` | string | - | Required: Your Sarvam API key |
+| `SARVAM_DEBUG` | boolean | false | Enable debug logging and metrics summary |
+| `SARVAM_PROVIDER_RETRIES` | number | 2 | Number of provider-level retries for 429 responses |
+
+### Tool Compatibility
+
+The extension provides compatibility shims for the following tools:
+
+- **read** - Automatically fixes Windows paths and converts array content to strings
+- **write** - Automatically fixes Windows paths and converts array content to strings  
+- **edit** - Remaps Claude-style arguments (`file_path`, `old_string`/`new_string`) to pi's schema (`path`, `edits[{oldText,newText}]`)
+
+### Error Handling
+
+- **Transient 403 errors** - Automatically retried with exponential backoff (1s/3s/8s)
+- **Request size limits** - Automatically trims old message content to stay under 256KB
+- **Developer role** - Automatically converted to system role for compatibility
+
 ## License
 
 [MIT](./LICENSE)
