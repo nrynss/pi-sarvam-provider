@@ -310,6 +310,37 @@ export default async function (pi: ExtensionAPI) {
   const PERMANENT = /invalid_api_key_error|invalid or missing authentication|unauthenticated|unauthorized|\b401\b/i;
   const shouldRetry = (message: string) => TRANSIENT.test(message) && !PERMANENT.test(message);
 
+  // Retry-After, via pi's implementation rather than a second one.
+  //
+  // pi-ai's `retryProviderRequest` already honours `retry-after-ms` and
+  // `retry-after` (delta-seconds and HTTP-date), caps a server-requested wait at
+  // `maxRetryDelayMs` (60s default), and otherwise backs off exponentially with
+  // jitter. It is inert unless `maxRetries > 0`, and pi ships
+  // `retry.provider.maxRetries: 0` — so out of the box nothing honours Retry-After,
+  // and a 429 falls straight through to the fixed ladder below, which burns all
+  // three attempts in ~12s against a wait the gateway already told us about.
+  //
+  // We cannot read the header ourselves: the OpenAI SDK throws on non-2xx, so
+  // `options.onResponse` — pi's only hook that carries response headers — never
+  // fires on the failing request, and by the time the failure reaches this wrapper
+  // it is just an error string.
+  //
+  // Enabling it in the options we pass down scopes it to sarvam. pi's own advice to
+  // leave provider retries at 0 targets subscription providers, where SDK-level
+  // retries can absorb out-of-quota errors and stall the agent until the quota
+  // resets; Sarvam is metered per request and returns 429 for rate, not exhaustion.
+  // This covers 408/409/429/5xx only — pi-ai does not retry 403, so Sarvam's
+  // transient gateway 403s remain the ladder's job below.
+  //
+  // Set SARVAM_PROVIDER_RETRIES=0 to opt out; an explicit `retry.provider.maxRetries`
+  // above 0 in pi's settings wins.
+  const PROVIDER_RETRIES = (() => {
+    const raw = process.env.SARVAM_PROVIDER_RETRIES;
+    if (raw === undefined) return 2;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : 2;
+  })();
+
   const RETRY_DELAYS_MS = [1000, 3000, 8000]; // 3 retries after the initial attempt
   // Abort-aware: a cancelled turn should not have to wait out the full backoff.
   const sleep = (ms: number, signal?: AbortSignal) =>
@@ -350,6 +381,8 @@ export default async function (pi: ExtensionAPI) {
     const prior = options?.onPayload;
     return {
       ...options,
+      // 0 (pi's default) means "unset" here — see PROVIDER_RETRIES above.
+      maxRetries: options?.maxRetries || PROVIDER_RETRIES,
       onPayload: async (payload: unknown, model: unknown) => {
         const rewritten = prior ? await prior(payload, model) : undefined;
         const current = (rewritten ?? payload) as Record<string, unknown>;

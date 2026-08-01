@@ -92,6 +92,8 @@ Alternatively, list the package in the `packages` array of your pi `settings.jso
 | Variable          | Required | Description                          |
 | ----------------- | -------- | ------------------------------------ |
 | `SARVAM_API_KEY`  | yes      | Your Sarvam API key. The provider is not registered if this is unset. |
+| `SARVAM_DEBUG`    | no       | Set to `true` for per-request debug logging and a metrics summary on exit. |
+| `SARVAM_PROVIDER_RETRIES` | no | Provider-level retries for Sarvam traffic (default `2`). These are what honour a `Retry-After` header on 429. Set to `0` to disable. |
 
 The base URL is `https://api.sarvam.ai/v1`.
 

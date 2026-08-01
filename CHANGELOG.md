@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Retry-After` is now honoured on rate limits.** pi-ai's `retryProviderRequest` already
+  implements this correctly — `retry-after-ms` and `retry-after`, both delta-seconds and
+  HTTP-date, capped at `maxRetryDelayMs` — but it is inert unless `maxRetries > 0`, and pi
+  ships `retry.provider.maxRetries: 0`. So by default a 429 fell through to this extension's
+  fixed 1s/3s/8s ladder, which burned all three attempts in ~12s against a wait the gateway
+  had already specified, sending two requests certain to be rejected. The provider options
+  now request 2 retries for Sarvam traffic, enabling pi's implementation rather than adding a
+  second one. Covers 408/409/429/5xx; pi-ai does not retry 403, so Sarvam's transient gateway
+  403s remain the existing ladder's job. Set `SARVAM_PROVIDER_RETRIES=0` to opt out; an
+  explicit `retry.provider.maxRetries` above 0 in pi's settings takes precedence.
 - **Model discovery cache moved from memory to disk**
   (`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`, mode 600, 5 minute TTL). Discovery runs
   once per process during activate, so the previous in-memory cache could never serve a hit —
