@@ -134,7 +134,7 @@ pi issues provider requests on two paths, and the shims have to cover both:
 
 - **Normal turns** — pi supplies an `onPayload` callback, which is what fires the
   `before_provider_request` extension hook.
-- **Compaction and branch summarization** — these build their own request options and
+- **Compaction and branch summarisation** — these build their own request options and
   supply no callback, so no hook fires.
 
 Payload normalisation (`developer` → `system`, array content → string, the 256 KB size
@@ -171,7 +171,7 @@ Array content → string is a message-payload transformation, not a tool one.
 ### Model discovery cache
 
 Discovery runs once per process, so the cache is on disk
-(`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`, mode 600, 5 minute TTL): it saves the
+(`$XDG_CACHE_HOME/pi-sarvam-provider/models.json`, mode 600, 5-minute TTL): it saves the
 `/v1/models` round-trip on the *next* launch. Entries are invalidated by base URL, a hash
 of the API key, and TTL — the key itself is never written. Any cache I/O failure falls back
 to fetching.
