@@ -316,7 +316,7 @@ export default async function (pi: ExtensionAPI) {
     | ((m: unknown, c: unknown, o: unknown) => AsyncIterable<Record<string, unknown>>)
     | undefined;
 
-  const TRANSIENT = /\b(403|408|425|429|500|502|503|504)\b|forbidden|too many requests|rate.?limit|overloaded|temporar|unavailable|gateway|fetch failed|network error|socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|UND_ERR_|socket closed/i;
+  const TRANSIENT = /\b(403|408|425|429|500|502|503|504)\b|forbidden|too many requests|rate.?limit|overloaded|temporar|unavailable|gateway|fetch failed|network error|socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|UND_ERR_|socket closed|timed out|request timeout|connection.*closed|connection refused|\btls\b/i;
 
   // Sarvam returns 403 for BOTH transient gateway blips and a permanently bad key, so
   // the status alone can't separate them — the body's error code can. Note that
@@ -349,7 +349,7 @@ export default async function (pi: ExtensionAPI) {
   // transient gateway 403s remain the ladder's job below.
   //
   // Set SARVAM_PROVIDER_RETRIES=0 to opt out; an explicit `retry.provider.maxRetries`
-  // above 0 in pi's settings wins.
+  // in pi's settings (any value, including 0) takes precedence over the env var.
   const PROVIDER_RETRIES = (() => {
     const raw = process.env.SARVAM_PROVIDER_RETRIES;
     if (raw === undefined) return 2;
@@ -400,8 +400,10 @@ export default async function (pi: ExtensionAPI) {
     const prior = options?.onPayload;
     return {
       ...options,
-      // 0 (pi's default) means "unset" here — see PROVIDER_RETRIES above.
-      maxRetries: options?.maxRetries || PROVIDER_RETRIES,
+      // pi's own default here is *undefined*, not 0 — the `??` (not `||`) matters:
+      // an explicit `retry.provider.maxRetries: 0` in pi's settings must stay 0 to
+      // actually disable the Retry-After layer. See PROVIDER_RETRIES above.
+      maxRetries: options?.maxRetries !== undefined ? options.maxRetries : PROVIDER_RETRIES,
       onPayload: async (payload: unknown, model: unknown) => {
         const rewritten = prior ? await prior(payload, model) : undefined;
         const current = (rewritten ?? payload) as Record<string, unknown>;
@@ -448,6 +450,9 @@ export default async function (pi: ExtensionAPI) {
             (out as any).push(ev);
             if (ev?.type === "done" || ev?.type === "error") {
               const duration = Date.now() - startTime;
+              // A terminal error event is a failed request — count it, unless it is
+              // an abort (the signal case), which is a cancellation, not an error.
+              if (ev?.type === "error" && ev?.reason !== "aborted") providerMetrics.streamErrors++;
               providerMetrics.totalRequests++;
               providerMetrics.totalDuration += duration;
               providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;

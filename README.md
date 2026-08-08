@@ -152,10 +152,12 @@ Two independent layers covering different failures:
 | pi-ai `retryProviderRequest` | 408, 409, 429, 5xx | `Retry-After` when sent, else exponential backoff with jitter, capped by `retry.provider.maxRetryDelayMs` (60 s) |
 | This extension's stream wrapper | Transient `403` gateway blips | Fixed ladder: 1 s / 3 s / 8 s |
 
-pi ships `retry.provider.maxRetries: 0`, which leaves the first layer inert, so the
+pi ships `retry.provider.maxRetries` unset, which leaves the first layer inert, so the
 extension requests retries for Sarvam traffic (`SARVAM_PROVIDER_RETRIES`) to get
-`Retry-After` honoured. pi-ai does not retry `403`, so the second layer keeps that job. A
-`403` that looks like a bad key rather than a blip is not retried at all.
+`Retry-After` honoured — unless the user sets `retry.provider.maxRetries` themselves,
+in which case their value (including an explicit `0` to disable) wins. pi-ai does not
+retry `403`, so the second layer keeps that job. A `403` that looks like a bad key
+rather than a blip is not retried at all.
 
 ### Tool argument shims
 
