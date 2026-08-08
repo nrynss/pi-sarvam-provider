@@ -5,3 +5,5 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+# project-local pi installs (pi install -l)
+.pi/
