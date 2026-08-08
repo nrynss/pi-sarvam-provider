@@ -38,7 +38,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/sarvam.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
