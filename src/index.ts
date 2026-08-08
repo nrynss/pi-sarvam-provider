@@ -33,7 +33,7 @@ import {
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai/compat";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -107,6 +107,10 @@ const writeCachedModels = (apiKey: string, baseUrl: string, models: ModelRespons
       ttl: DEFAULT_TTL,
     };
     writeFileSync(CACHE_FILE, JSON.stringify(entry), { mode: 0o600 });
+    // mode only applies when the file is *created*; enforce 600 unconditionally so
+    // the key-hash-carrying file never inherits looser permissions from a stale
+    // predecessor or an over-permissive umask.
+    chmodSync(CACHE_FILE, 0o600);
   } catch (err) {
     debugLog(`Could not write model cache: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -530,7 +534,10 @@ export default async function (pi: ExtensionAPI) {
         {
           headers: {
             Authorization: `Bearer ${apiKey}`
-          }
+          },
+          // A hung gateway must not stall pi's startup: without a timeout, activate()
+          // blocks indefinitely and the session comes up with no provider at all.
+          signal: AbortSignal.timeout(10000)
         }
       );
 
@@ -584,30 +591,37 @@ export default async function (pi: ExtensionAPI) {
     // "no streamSimple" — the normal, unwrapped path.
     streamSimple: baseStreamSimple ? streamWithRetry : undefined,
 
-    models: models.data.map(model => ({
+    models: models.data.map(model => {
 
-      id: model.id,
+      // Sanitize the numeric fields: a 0, NaN, or non-numeric context_window would
+      // otherwise register a degenerate window (pi compacts every turn or never),
+      // and a bogus max_tokens could make every request fail with a 400.
+      const ctx = Number(model.context_window);
+      const contextWindow = Number.isFinite(ctx) && ctx > 0 ? Math.min(ctx, 46000) : 46000;
+      const mt = Number(model.max_tokens);
+      const maxTokens = Number.isFinite(mt) && mt > 0 ? mt : 16384;
 
-      name: model.id,
+      return {
 
-      reasoning: true,
+        id: model.id,
 
-      input: ["text"],
+        name: model.id,
 
-      // Cap the context window so pi's own compaction triggers BEFORE Sarvam's
-      // 256 KB gateway limit. That byte wall hits around ~35K tokens — far below
-      // the model's real token window — so with a 128K window pi never compacts
-      // and the request just grows until it 403s. With the cap, pi summarises old
-      // turns properly (shouldCompact fires at contextWindow - reserveTokens); the
-      // size guard below stays only as a last-resort backstop.
-      contextWindow:
-        Math.min(model.context_window ?? 128000, 46000),
+        reasoning: true,
 
-      maxTokens:
-        model.max_tokens ??
-        16384,
+        input: ["text"],
 
-      cost: {
+        // Cap the context window so pi's own compaction triggers BEFORE Sarvam's
+        // 256 KB gateway limit. That byte wall hits around ~35K tokens — far below
+        // the model's real token window — so with a 128K window pi never compacts
+        // and the request just grows until it 403s. With the cap, pi summarises old
+        // turns properly (shouldCompact fires at contextWindow - reserveTokens); the
+        // size guard below stays only as a last-resort backstop.
+        contextWindow,
+
+        maxTokens,
+
+        cost: {
         input: 0,
         output: 0,
         cacheRead: 0,
@@ -623,13 +637,14 @@ export default async function (pi: ExtensionAPI) {
         xhigh: "high"
       },
 
-      // Sarvam's OpenAI-compatible endpoint rejects the `developer` role that pi
-      // sends for the system prompt of reasoning models. Force plain `system`.
-      compat: {
-        supportsDeveloperRole: false
-      }
+        // Sarvam's OpenAI-compatible endpoint rejects the `developer` role that pi
+        // sends for the system prompt of reasoning models. Force plain `system`.
+        compat: {
+          supportsDeveloperRole: false
+        }
 
-    }))
+      };
+    })
 
   });
 
