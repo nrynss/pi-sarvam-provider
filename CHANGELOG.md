@@ -5,6 +5,70 @@ All notable changes to `pi-sarvam-provider` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **One-sided Claude-style edits no longer corrupt files.** The edit shim previously
+  folded `old_string`/`new_string` into `oldText`/`newText` with `?? ""`, so a model
+  sending only `new_string` fabricated `oldText: ""` (the edit engine rejects it — a
+  wasted turn) and a model sending only `old_string` fabricated `newText: ""` and
+  silently **deleted** the matched text from the file. Both fields are now required,
+  non-empty; a one-sided call is rejected by schema validation and the model retries.
+- **Network-level failures are now retried.** pi-ai's `retryProviderRequest` only
+  retries errors carrying an HTTP status, and the ladder's transient filter missed
+  TCP/transport failures, so `fetch failed`, `ECONNRESET`, `socket hang up`, SDK
+  timeouts, and dropped connections fell through both retry layers. The filter now
+  covers them.
+- **Aborted turns are labelled `aborted`.** The wrapper's abort error event used
+  `reason`/`stopReason: "error"`; pi's event protocol distinguishes cancellations, and
+  session metadata now records them correctly.
+- **An explicit `retry.provider.maxRetries: 0` in pi's settings now disables the
+  `Retry-After` layer.** The previous `|| PROVIDER_RETRIES` treated an intentional `0`
+  as "unset" and forced 2 retries. pi's default is *unset* (not `0`), so the `??`
+  check keeps the default at 2 while honouring explicit values including `0`.
+- **`Stream Errors` in the debug metrics now counts terminal HTTP error events**, not
+  just thrown exceptions (the common failure path was under-counted). Aborts are still
+  excluded.
+- **A hung gateway can no longer stall pi startup.** The `/v1/models` discovery
+  fetch has a 10-second timeout; previously an unresponsive host blocked `activate()`
+  indefinitely, leaving the session with no provider.
+- **Model discovery retries transient failures.** `/v1/models` is subject to the
+  same intermittent gateway `403`s as completions (verified live: identical requests
+  returned both `200` and `403`). Discovery now retries transient/network failures
+  on a short ladder (0.5 s / 1.5 s) while still failing fast on an
+  `invalid_api_key_error` body, so a flaky gateway no longer silently removes the
+  provider for the whole launch.
+- **Cache robustness.** Clock fields are type-checked (a corrupt entry with a string
+  `timestamp`/`ttl` compared as `NaN` and served forever), model ids are validated, and
+  mode 600 is enforced with `chmod` on every write rather than only at file creation.
+- **Degenerate model fields are sanitized.** A `context_window` of `0`/`NaN`/non-
+  numeric registered a broken window (pi compacts every turn or never); both
+  `context_window` and `max_tokens` now fall back to safe values.
+- **Tool shims reject non-object arguments** instead of spreading a string into
+  index-keyed garbage; tool-call metrics moved out of `prepareArguments` (which runs
+  for every provider) into a provider-gated `tool_call` handler.
+- **Image-only messages no longer collapse to empty content.** The payload
+  normalizer now emits a `[non-text content omitted]` placeholder instead of an empty
+  string some OpenAI-compatible endpoints reject.
+- **Size-guard hardening.** `tool_calls[].function` is only spread when it is an
+  object (a string-typed `function` previously produced garbage fields).
+
+### Changed
+
+- **Pure compatibility logic extracted into `src/sarvam.ts`** (path remapping, retry
+  classification, model-field sanitization, payload normalization, error-event
+  construction, abort-aware sleep) so it can be tested without pi or a network.
+- **New test suite** (`tests/sarvam.test.ts`, `node:test`, no new dependencies —
+  `pnpm test`, requires Node ≥ 22.6 for type stripping). 30 tests cover the remapping,
+  retry classification, size-guard stages (stub → drop-at-user-boundary → hard cap),
+  idempotence, and abort semantics.
+- **Docs aligned with verified behaviour:** the tool shims are registered globally
+  (they pass non-Claude-style arguments through untouched); when two installed copies
+  collide the first-registered one wins silently; `retry.provider.maxRetries`
+  precedence is stated precisely; and the discovery endpoint is now known to answer
+  `403` (not `200`) for an invalid key — verified against the live API during testing.
+
 ## [0.1.3] - 2026-08-01
 
 ### Fixed

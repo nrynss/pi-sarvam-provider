@@ -308,8 +308,8 @@ export default async function (pi: ExtensionAPI) {
   // pi-ai's `retryProviderRequest` already honours `retry-after-ms` and
   // `retry-after` (delta-seconds and HTTP-date), caps a server-requested wait at
   // `maxRetryDelayMs` (60s default), and otherwise backs off exponentially with
-  // jitter. It is inert unless `maxRetries > 0`, and pi ships
-  // `retry.provider.maxRetries: 0` — so out of the box nothing honours Retry-After,
+  // jitter. It is inert unless `maxRetries > 0`, and pi leaves
+  // `retry.provider.maxRetries` unset — so out of the box nothing honours Retry-After,
   // and a 429 falls straight through to the fixed ladder below, which burns all
   // three attempts in ~12s against a wait the gateway already told us about.
   //
@@ -478,45 +478,62 @@ export default async function (pi: ExtensionAPI) {
   }
 
   if (!models) {
-    try {
-      const response = await fetch(
-        `${BASE_URL}/models`,
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`
-          },
-          // A hung gateway must not stall pi's startup: without a timeout, activate()
-          // blocks indefinitely and the session comes up with no provider at all.
-          signal: AbortSignal.timeout(10000)
-        }
-      );
+    // /v1/models is subject to the same intermittent gateway 403s as completions
+    // (verified live: the same request answers 200 and 403 across attempts), so
+    // retry transient failures on a short ladder — but fail fast on an
+    // invalid_api_key_error body, which is permanent and needs no retrying.
+    const DISCOVERY_DELAYS_MS = [500, 1500];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetch(
+          `${BASE_URL}/models`,
+          {
+            headers: {
+              Authorization: `Bearer ${apiKey}`
+            },
+            // A hung gateway must not stall pi's startup: without a timeout, activate()
+            // blocks indefinitely and the session comes up with no provider at all.
+            signal: AbortSignal.timeout(10000)
+          }
+        );
 
-      if (!response.ok) {
+        if (response.ok) {
+          models = (await response.json()) as ModelResponse;
+          break;
+        }
+
         const detail = (await response.text().catch(() => "")).slice(0, 300).trim();
+        const reason = `HTTP ${response.status} ${response.statusText}. ${detail}`;
+        if (attempt < DISCOVERY_DELAYS_MS.length && shouldRetry(reason)) {
+          debugLog(`Discovery HTTP ${response.status}, retrying in ${DISCOVERY_DELAYS_MS[attempt]}ms`);
+          await sleep(DISCOVERY_DELAYS_MS[attempt]!);
+          continue;
+        }
         console.warn(
-          `Sarvam: could not list models — HTTP ${response.status} ${response.statusText}.` +
-          `${response.status === 401 || response.status === 403 ? " Check SARVAM_API_KEY." : ""}` +
-          `${detail ? ` ${detail}` : ""}`
+          `Sarvam: could not list models — ${reason}` +
+          `${response.status === 401 || response.status === 403 ? " Check SARVAM_API_KEY." : ""}`
+        );
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < DISCOVERY_DELAYS_MS.length && shouldRetry(msg)) {
+          debugLog(`Discovery error, retrying in ${DISCOVERY_DELAYS_MS[attempt]}ms: ${msg}`);
+          await sleep(DISCOVERY_DELAYS_MS[attempt]!);
+          continue;
+        }
+        modelMetrics.errors++;
+        console.warn(
+          `Sarvam: could not reach ${BASE_URL}/models — ${msg}`
         );
         return;
       }
-
-      models = (await response.json()) as ModelResponse;
-
-      modelMetrics.apiCalls++;
-      debugLog(`Successfully fetched ${models.data.length} models from API`);
-
-      // Cache the successful response for the next pi launch
-      writeCachedModels(apiKey, BASE_URL, models);
-
-    } catch (err) {
-      modelMetrics.errors++;
-      console.warn(
-        `Sarvam: could not reach ${BASE_URL}/models — ` +
-        `${err instanceof Error ? err.message : String(err)}`
-      );
-      return;
     }
+
+    modelMetrics.apiCalls++;
+    debugLog(`Successfully fetched ${models.data.length} models from API`);
+
+    // Cache the successful response for the next pi launch
+    writeCachedModels(apiKey, BASE_URL, models);
   }
 
   if (!Array.isArray(models?.data) || models.data.length === 0) {
@@ -569,20 +586,20 @@ export default async function (pi: ExtensionAPI) {
         maxTokens,
 
         cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0
+        },
 
-      thinkingLevelMap: {
-        off: null,
-        minimal: "low",
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "high"
-      },
+        thinkingLevelMap: {
+          off: null,
+          minimal: "low",
+          low: "low",
+          medium: "medium",
+          high: "high",
+          xhigh: "high"
+        },
 
         // Sarvam's OpenAI-compatible endpoint rejects the `developer` role that pi
         // sends for the system prompt of reasoning models. Force plain `system`.
