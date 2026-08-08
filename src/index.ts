@@ -237,26 +237,21 @@ export default async function (pi: ExtensionAPI) {
 
   const readDef = createReadToolDefinition(cwd);
   readDef.prepareArguments = (args: unknown) => {
+    // Models occasionally emit arguments as a JSON string or a bare array. Spreading
+    // a string yields index-keyed garbage ({0:'a',1:'b'}) and an array would too;
+    // leave both untouched so schema validation reports the real shape instead.
+    if (typeof args !== "object" || args === null || Array.isArray(args)) return args as never;
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
-
-    // Track read tool calls
-    providerMetrics.toolCalls++;
-    providerMetrics.toolCallTypes.read = (providerMetrics.toolCallTypes.read || 0) + 1;
-
     return a as never;
   };
   pi.registerTool(readDef);
 
   const writeDef = createWriteToolDefinition(cwd);
   writeDef.prepareArguments = (args: unknown) => {
+    if (typeof args !== "object" || args === null || Array.isArray(args)) return args as never;
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
-
-    // Track write tool calls
-    providerMetrics.toolCalls++;
-    providerMetrics.toolCallTypes.write = (providerMetrics.toolCallTypes.write || 0) + 1;
-
     return a as never;
   };
   pi.registerTool(writeDef);
@@ -268,6 +263,7 @@ export default async function (pi: ExtensionAPI) {
   // it: map the Claude-style names to pi's legacy names, then delegate.
   const piEditPrepare = editDef.prepareArguments;
   editDef.prepareArguments = (args: unknown) => {
+    if (typeof args !== "object" || args === null || Array.isArray(args)) return args as never;
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
     // Only fold Claude-style old_string/new_string into oldText/newText when BOTH
@@ -285,10 +281,6 @@ export default async function (pi: ExtensionAPI) {
     delete a.old_string;
     delete a.new_string;
     delete a.replace_all;
-
-    // Track edit tool calls
-    providerMetrics.toolCalls++;
-    providerMetrics.toolCallTypes.edit = (providerMetrics.toolCallTypes.edit || 0) + 1;
 
     return (piEditPrepare ? piEditPrepare(a) : a) as never;
   };
@@ -792,6 +784,16 @@ export default async function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (event, ctx) => {
     if (ctx.model?.provider !== "sarvam") return;
     return normalizeSarvamPayload(event.payload as Record<string, unknown>);
+  });
+
+  // Tool-call metrics. Counted here rather than in the prepareArguments shims
+  // (which also run for other providers — the tool registration is global), so the
+  // counters only reflect sarvam traffic.
+  pi.on("tool_call", (event, ctx) => {
+    if (ctx.model?.provider !== "sarvam") return;
+    if (event.toolName !== "read" && event.toolName !== "write" && event.toolName !== "edit") return;
+    providerMetrics.toolCalls++;
+    providerMetrics.toolCallTypes[event.toolName] = (providerMetrics.toolCallTypes[event.toolName] || 0) + 1;
   });
 
   // ---------------------------------------------------------------------------
