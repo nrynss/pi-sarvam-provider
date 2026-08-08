@@ -71,7 +71,7 @@ Other useful commands:
 
 ```sh
 pi list                              # show installed packages
-pi install npm:pi-sarvam-provider@0.1.3   # pin a version
+pi install npm:pi-sarvam-provider@0.1.4   # pin a version
 pi update npm:pi-sarvam-provider     # update to the latest release
 pi remove npm:pi-sarvam-provider     # uninstall
 pi install -l npm:pi-sarvam-provider # install into this project only (.pi/npm/)

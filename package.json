@@ -1,6 +1,6 @@
 {
   "name": "pi-sarvam-provider",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Pi coding-agent extension that registers Sarvam AI as a model provider and adds the compatibility shims its OpenAI-compatible endpoint needs (role/content fixes, tool-argument remapping, 403 retry, and a 256KB request-size guard).",
   "author": "rocknarayan <rocknarayan@gmail.com>",
   "license": "MIT",
