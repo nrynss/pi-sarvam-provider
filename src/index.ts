@@ -668,13 +668,20 @@ export default async function (pi: ExtensionAPI) {
       const role = msg.role === "developer" ? "system" : msg.role;
       if (!Array.isArray(msg.content)) return { ...msg, role };
 
-      const text = (msg.content as Array<{ type?: string; text?: string }>)
+      const parts = msg.content as Array<{ type?: string; text?: string }>;
+      const text = parts
         .filter(p => p.type === "text" || typeof p.text === "string")
         .map(p => p.text ?? "")
         .join("");
 
       providerMetrics.contentTransformations++;
-      return { ...msg, role, content: text };
+
+      // Joining text parts drops anything non-text (images etc.). An image-only
+      // message would collapse to an empty content string, which some
+      // OpenAI-compatible endpoints reject; keep a self-documenting placeholder so
+      // the request stays valid and the model knows the content was not textual.
+      const content = text.length > 0 || parts.length === 0 ? text : "[non-text content omitted]";
+      return { ...msg, role, content };
     });
 
     let result: Record<string, unknown> = { ...payload, messages };
@@ -693,9 +700,17 @@ export default async function (pi: ExtensionAPI) {
         const m = rest[i];
         if (typeof m.content === "string" && m.content.length > STUB.length) m.content = STUB;
         if (Array.isArray(m.tool_calls)) {
-          m.tool_calls = (m.tool_calls as Array<Record<string, any>>).map(tc => ({
-            ...tc, function: { ...(tc.function ?? {}), arguments: "{}" },
-          }));
+          m.tool_calls = (m.tool_calls as Array<Record<string, any>>).map(tc => {
+            const fn = tc.function;
+            return {
+              ...tc,
+              // `function` is an object in pi's normalized messages, but a raw
+              // payload could carry a string (some serializers); spread only objects.
+              function: typeof fn === "object" && fn !== null
+                ? { ...fn, arguments: "{}" }
+                : fn,
+            };
+          });
         }
       }
 
@@ -743,11 +758,13 @@ export default async function (pi: ExtensionAPI) {
             m.content = m.content.slice(0, CAP) + "\n…[truncated]";
           }
           if (Array.isArray(m.tool_calls)) {
-            m.tool_calls = (m.tool_calls as Array<Record<string, any>>).map(tc =>
-              typeof tc.function?.arguments === "string" && tc.function.arguments.length > ARG_CAP
-                ? { ...tc, function: { ...tc.function, arguments: "{}" } }
-                : tc
-            );
+            m.tool_calls = (m.tool_calls as Array<Record<string, any>>).map(tc => {
+              const fn = tc.function;
+              return typeof fn === "object" && fn !== null &&
+                typeof fn.arguments === "string" && fn.arguments.length > ARG_CAP
+                ? { ...tc, function: { ...fn, arguments: "{}" } }
+                : tc;
+            });
           }
         }
         result = { ...payload, messages: [...sys, ...rest] };
