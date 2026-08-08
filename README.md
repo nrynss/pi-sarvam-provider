@@ -26,9 +26,10 @@ work" in pi.
 - **Windows path sanitisation** — strips a spurious leading separator before a drive
   letter (`/E:/work` → `E:\work`) to avoid `path.resolve` doubling the drive
   (`E:\E:\work…`) and failing `mkdir`.
-- **Transient 403 retry** — Sarvam's Azure gateway occasionally returns a `403` for chat
-  completions. The extension wraps the provider stream and retries with backoff
-  (1 s / 3 s / 8 s) when the *first* event is a transient error (safe, because a 403 fails
+- **Transient-error retry** — Sarvam's Azure gateway occasionally returns a `403` for chat
+  completions, and network-level blips (timeouts, dropped sockets) also occur. The extension
+  wraps the provider stream and retries with backoff
+  (1 s / 3 s / 8 s) when the *first* event is a transient error (safe, because a `403` fails
   at connect time before any content streams). Non-Sarvam traffic passes through untouched.
 - **256 KB request-size guard** — Sarvam's gateway rejects request bodies ≥ 256 KB with a
   `403`. Long sessions cross this and then fail every turn. The extension keeps the outgoing
@@ -38,7 +39,10 @@ work" in pi.
 - **Editing guidance** — appends concrete file-editing rules to the system prompt to help
   the smaller models land exact-match edits.
 
-All behaviour is scoped to the `sarvam` provider; other providers are unaffected.
+All behaviour is scoped to the `sarvam` provider; other providers are unaffected. The
+`read`/`write`/`edit` tool shims are registered globally (tools are per-session, not
+per-provider) but pass arguments through untouched unless they carry Claude-style names, so
+other providers see no change in behaviour.
 
 ## Requirements
 
@@ -93,7 +97,7 @@ Alternatively, list the package in the `packages` array of your pi `settings.jso
 | ----------------- | -------- | ------------------------------------ |
 | `SARVAM_API_KEY`  | yes      | Your Sarvam API key. The provider is not registered if this is unset. |
 | `SARVAM_DEBUG`    | no       | Set to `true` for per-request debug logging and a metrics summary on exit. |
-| `SARVAM_PROVIDER_RETRIES` | no | Provider-level retries for Sarvam traffic (default `2`). These are what honour a `Retry-After` header on 429. Set to `0` to disable. |
+| `SARVAM_PROVIDER_RETRIES` | no | Provider-level retries for Sarvam traffic (default `2`). These are what honour a `Retry-After` header on 429. Set to `0` to disable. An explicit `retry.provider.maxRetries` in pi's settings (any value, including `0`) takes precedence over this variable. |
 
 The base URL is `https://api.sarvam.ai/v1`.
 
@@ -102,8 +106,8 @@ The base URL is `https://api.sarvam.ai/v1`.
 - The 256 KB guard is **crude compaction**: on oversized turns the model loses *old* tool
   outputs (it sees a stub) but keeps recent context and can re-read files. pi's own
   `/compact` can't help here because summarisation would itself exceed the 256 KB limit.
-- The transient-403 retry handles brief gateway blips (seconds), not sustained multi-minute
-  blocks. For a sustained outage, wait or switch models.
+- The transient-error retry handles brief gateway blips (seconds) and network hiccups, not
+  sustained multi-minute blocks. For a sustained outage, wait or switch models.
 
 ## Development
 
@@ -120,7 +124,7 @@ pi -ne -e ./src/index.ts --provider sarvam --model sarvam-105b
 ```
 
 Note that an installed copy of this package registers the same `read`/`write`/`edit` tool
-names as a local one, and pi rejects the duplicate rather than choosing between them. Remove
+names as a local one; when two copies collide, the first-registered copy wins silently. Remove
 the installed copy (`pi remove npm:pi-sarvam-provider`) before testing locally.
 
 ## Internals
