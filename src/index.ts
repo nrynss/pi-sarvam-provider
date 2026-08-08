@@ -80,8 +80,16 @@ const readCachedModels = (apiKey: string, baseUrl: string): ModelResponse | null
     const entry = JSON.parse(readFileSync(CACHE_FILE, "utf8")) as ModelCacheEntry;
     if (entry.baseUrl !== baseUrl) return null;
     if (entry.keyHash !== keyHashOf(apiKey)) return null;
+    // Type-check the clock fields: a hand-edited or truncated entry with a string
+    // timestamp/ttl makes the comparisons NaN (never stale), so the entry would
+    // serve forever even after the key is rotated.
+    if (typeof entry.timestamp !== "number" || !Number.isFinite(entry.timestamp)) return null;
+    if (typeof entry.ttl !== "number" || !Number.isFinite(entry.ttl)) return null;
     if (Date.now() - entry.timestamp >= entry.ttl) return null;
     if (!Array.isArray(entry.models?.data)) return null;
+    // A corrupt entry can pass the array check with garbage members; only accept
+    // entries whose model ids are usable strings.
+    if (!entry.models.data.every(m => typeof m?.id === "string" && m.id.length > 0)) return null;
     return entry.models;
   } catch {
     return null;
@@ -258,12 +266,20 @@ export default async function (pi: ExtensionAPI) {
   editDef.prepareArguments = (args: unknown) => {
     const a = { ...(args as Record<string, unknown>) };
     remapPath(a);
-    if (a.old_string != null || a.new_string != null) {
-      if (a.oldText == null) a.oldText = a.old_string ?? "";
-      if (a.newText == null) a.newText = a.new_string ?? "";
-      delete a.old_string;
-      delete a.new_string;
+    // Only fold Claude-style old_string/new_string into oldText/newText when BOTH
+    // are present and non-empty. A one-sided call is a model error, and guessing is
+    // destructive: with only new_string the shim would fabricate oldText "" (the
+    // edit engine rejects it — a wasted turn), and with only old_string it would
+    // fabricate newText "" and silently DELETE the matched text from the file.
+    // Leaving the args untouched makes schema validation reject the call cleanly
+    // so the model retries with both fields.
+    if (typeof a.old_string === "string" && a.old_string.length > 0 &&
+        typeof a.new_string === "string" && a.new_string.length > 0) {
+      if (a.oldText == null) a.oldText = a.old_string;
+      if (a.newText == null) a.newText = a.new_string;
     }
+    delete a.old_string;
+    delete a.new_string;
     delete a.replace_all;
 
     // Track edit tool calls
@@ -300,7 +316,7 @@ export default async function (pi: ExtensionAPI) {
     | ((m: unknown, c: unknown, o: unknown) => AsyncIterable<Record<string, unknown>>)
     | undefined;
 
-  const TRANSIENT = /\b(403|408|425|429|500|502|503|504)\b|forbidden|too many requests|rate.?limit|overloaded|temporar|unavailable|gateway/i;
+  const TRANSIENT = /\b(403|408|425|429|500|502|503|504)\b|forbidden|too many requests|rate.?limit|overloaded|temporar|unavailable|gateway|fetch failed|network error|socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|UND_ERR_|socket closed/i;
 
   // Sarvam returns 403 for BOTH transient gateway blips and a permanently bad key, so
   // the status alone can't separate them — the body's error code can. Note that
@@ -354,14 +370,17 @@ export default async function (pi: ExtensionAPI) {
       signal?.addEventListener("abort", done, { once: true });
     });
 
-  const errorEvent = (model: { api?: unknown; provider?: unknown; id?: unknown }, message: string) => ({
+  const errorEvent = (model: { api?: unknown; provider?: unknown; id?: unknown }, message: string, aborted = false) => ({
     type: "error",
-    reason: "error",
+    // pi's event protocol distinguishes aborts from failures: an aborted turn
+    // must carry reason/stopReason "aborted" so session metadata records the
+    // cancellation rather than an upstream error.
+    reason: aborted ? "aborted" : "error",
     error: {
       role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      stopReason: "error", errorMessage: message, timestamp: Date.now(),
+      stopReason: aborted ? "aborted" : "error", errorMessage: message, timestamp: Date.now(),
     },
   });
 
@@ -406,7 +425,7 @@ export default async function (pi: ExtensionAPI) {
           providerMetrics.avgDuration = providerMetrics.totalDuration / providerMetrics.totalRequests;
 
           debugLog(`Request aborted after ${duration}ms (attempt ${attempt + 1})`);
-          (out as any).push(errorEvent(model, "Request was aborted"));
+          (out as any).push(errorEvent(model, "Request was aborted", true));
           return;
         }
 
