@@ -43,7 +43,7 @@ import {
   sanitizeModelFields,
   shouldRetry,
   sleep,
-} from "./sarvam.js";
+} from "./sarvam.ts";
 
 interface ModelResponse {
   data: Array<{
@@ -374,8 +374,6 @@ export default async function (pi: ExtensionAPI) {
 
     void (async () => {
       for (let attempt = 0; ; attempt++) {
-        const attemptStart = Date.now();
-
         if (options?.signal?.aborted) {
           const duration = Date.now() - startTime;
           providerMetrics.totalRequests++;
@@ -626,9 +624,14 @@ export default async function (pi: ExtensionAPI) {
   const normalizeCounters = { contentTransformations: 0, sizeGuardTriggers: 0 };
   const normalize = (payload: Record<string, unknown>) =>
     normalizeSarvamPayload(payload, normalizeCounters);
+  // The accumulator is reset after merging: both the `before_provider_request` hook
+  // and the injected options.onPayload normalize the same request (pass 2 is an
+  // idempotent no-op but still calls merge), so a stale accumulator would double-count.
   const mergeNormalizeCounters = () => {
     providerMetrics.contentTransformations += normalizeCounters.contentTransformations;
     providerMetrics.sizeGuardTriggers += normalizeCounters.sizeGuardTriggers;
+    normalizeCounters.contentTransformations = 0;
+    normalizeCounters.sizeGuardTriggers = 0;
   };
 
   pi.on("before_provider_request", (event, ctx) => {
